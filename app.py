@@ -7,12 +7,19 @@ import urllib.parse as urlparse
 from urllib.parse import urlencode
 import unicodedata
 import io
-from ddgs import DDGS # Naprawiony import
+from ddgs import DDGS
 
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="ScholarHunt Cloud", page_icon="📚", layout="wide")
 
-# --- FUNKCJE LOGICZNE ---
+# --- FUNKCJE POMOCNICZE ---
+def to_excel_buffer(df):
+    """Zamienia DataFrame na dane Excela w pamięci RAM"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
 def normalize_international(text):
     if not isinstance(text, str) or pd.isna(text): return ""
     nfkd_form = unicodedata.normalize('NFKD', text)
@@ -22,7 +29,7 @@ def normalize_international(text):
     return result.lower().strip()
 
 def clean_author_name(n):
-    n_clean = re.sub(r'\(\d+\)', '', n).strip()
+    n_clean = re.sub(r'\(\d+\)', '', str(n)).strip()
     n_clean = re.sub(r'\(.*?\)', '', n_clean).strip()
     if ',' in n_clean:
         parts = n_clean.split(',', 1)
@@ -69,7 +76,6 @@ def enforce_column_order(df, mode=""):
 
 # --- INTERFEJS ---
 st.title("📚 ScholarHunt Cloud")
-
 tab_merge, tab_past, tab_hunter = st.tabs(["🗂️ Merge", "👥 Past Authors", "🕵️ Hunter"])
 
 with tab_merge:
@@ -85,7 +91,7 @@ with tab_merge:
                     sn, fn = clean_author_name(n)
                     final_rows.append({"Name": fn, "Surname": sn, "Email": get_matched_email(sn, ems), "Article Title": title})
         out_df = enforce_column_order(pd.DataFrame(final_rows), 'merge')
-        st.download_button("💾 Pobierz Wynik", data=out_df.to_csv(index=False), file_name="Merge_Result.csv")
+        st.download_button("💾 Pobierz Wynik XLSX", data=to_excel_buffer(out_df), file_name="Merge_Result.xlsx")
 
 with tab_past:
     p_files = st.file_uploader("Wgraj pliki", accept_multiple_files=True, key="p_f")
@@ -100,39 +106,35 @@ with tab_past:
                     sn, fn = clean_author_name(n)
                     final_rows.append({"Name": fn, "Surname": sn, "Email": get_matched_email(sn, ems), "Article Title": title, "DG Journal name": p_jrnl})
         out_df = enforce_column_order(pd.DataFrame(final_rows), 'past')
-        st.download_button("💾 Pobierz CoAuthors", data=out_df.to_csv(index=False), file_name="CoAuthors.csv")
+        st.download_button("💾 Pobierz CoAuthors XLSX", data=to_excel_buffer(out_df), file_name="CoAuthors.xlsx")
 
 with tab_hunter:
     st.header("🕵️ Email Hunter")
     h_file = st.file_uploader("Wgraj bazę", type=["xlsx", "xls"], key="h_f")
-    h_strat = st.radio("Strategia:", ["Google", "Affiliation"])
     
     if h_file and st.button("🚀 Uruchom Huntera"):
         df = pd.read_excel(h_file)
-        
-        # --- KLUCZOWA POPRAWKA ---
         email_col = next((c for c in df.columns if 'mail' in c.lower()), 'Email')
         if email_col not in df.columns: df[email_col] = ""
-        df[email_col] = df[email_col].astype(object) # WYMUSZENIE TYPU TEKSTOWEGO
+        df[email_col] = df[email_col].astype(object)
         
         surname_col = next((c for c in df.columns if 'surname' in c.lower() or 'nazwisko' in c.lower()), 'Surname')
         name_col = next((c for c in df.columns if 'name' in c.lower() and 'surname' not in c.lower()), 'Name')
         
         progress = st.progress(0)
         for idx, row in df.iterrows():
-            surname = str(row.get(surname_col, '')).strip()
-            name = str(row.get(name_col, '')).strip()
+            sn = str(row.get(surname_col, '')).strip()
+            nm = str(row.get(name_col, '')).strip()
             
-            if pd.isna(surname) or surname == "" or '@' in str(row.get(email_col, '')): continue
+            if pd.isna(sn) or sn == "" or '@' in str(row.get(email_col, '')): continue
             
             try:
                 with DDGS() as ddgs:
-                    q = f'"{name} {surname}" email'
-                    res = list(ddgs.text(q, max_results=3))
+                    res = list(ddgs.text(f'"{nm} {sn}" email', max_results=3))
                     emails = []
                     for r in res: emails.extend(extract_emails_from_text(r.get('body', '') + " " + r.get('title', '')))
                     if emails: df.at[idx, email_col] = emails[0]
-            except Exception as e: st.warning(f"Błąd przy {surname}: {e}")
+            except Exception as e: st.warning(f"Błąd przy {sn}: {e}")
             progress.progress((idx + 1) / len(df))
             
-        st.download_button("💾 Pobierz Uzupełniony Plik", data=df.to_excel(index=False), file_name="Hunter_Results.xlsx")
+        st.download_button("💾 Pobierz Uzupełniony XLSX", data=to_excel_buffer(df), file_name="Hunter_Results.xlsx")
