@@ -6,3 +6,4 @@ beautifulsoup4
 ddgs
 openpyxl
 xlrd
+streamlit-lottie
