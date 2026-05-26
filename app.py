@@ -7,7 +7,6 @@ import urllib.parse as urlparse
 from urllib.parse import urlencode
 import unicodedata
 import io
-import random
 
 # --- EXTERNAL LIBRARIES ---
 try:
@@ -42,6 +41,10 @@ ADV_FIELDS = {
     "Times Cited": ["TC", "Times Cited, WoS Core"], 
     "Author Keywords": ["DE", "Author Keywords"]
 }
+
+# --- STATE INITIALIZATION ---
+if 'cited_db' not in st.session_state: st.session_state.cited_db = []
+if 'citing_db' not in st.session_state: st.session_state.citing_db = []
 
 # --- CORE LOGIC FUNCTIONS ---
 def normalize_international(text):
@@ -285,14 +288,14 @@ def process_single_article(doi, row_title, af, em_all, ad, rp, df_row, orcid_map
         orcid_val = orcid_map.get(n, "") if orcid_map else (str(df_row.get('ORCID', '')) if df_row is not None else "")
 
         if not matched_email and use_deep and HAS_DDGS and not fast_mode:
-            time.sleep(1.5) # Cloud safe limit
+            time.sleep(1.5)
             try:
                 queries = [f'"{fn} {sn}" email'] if strategy == "google" else [f'"{fn} {sn}" {affil_clean if affil_clean and affil_clean != "Unknown" else c} email']
                 with DDGS() as ddgs:
                     all_s = []
                     for q in queries:
                         if matched_email: break
-                        res = list(ddgs.text(q, max_results=3))
+                        res = list(ddgs.text(q, max_results=3, backend="html"))
                         for r in res:
                             all_s.extend(extract_emails_from_text(r.get('body', '') + " " + r.get('title', ''), n))
                         matched_email = get_matched_email(sn, list(set(all_s)))
@@ -345,20 +348,46 @@ def render_options_ui(prefix):
 
 # --- MAIN APP ---
 st.title("📚 ScholarHunt Cloud")
-st.markdown("Scientific Contacts Management System - Wersja Pełna")
+st.markdown("Scientific Contacts Management System")
 
 with st.sidebar:
-    st.header("⚙️ Ustawienia Globalne")
-    global_api_key = st.text_input("OpenAlex API Key (Opcjonalnie):", type="password")
-    if not HAS_DDGS: st.error("⚠️ Błąd ładowania pakietu ddgs.")
+    st.header("⚙️ Global Settings")
+    global_api_key = st.text_input("OpenAlex API Key (Optional):", type="password")
+    if not HAS_DDGS: st.error("⚠️ Error loading 'ddgs' package. Check requirements.txt")
 
-tabs = st.tabs(["🗂️ Merge", "👥 Past Authors", "🔑 Keywords", "📜 Cited", "💬 Citing", "✅ Validation", "🕵️ Hunter"])
+tabs = st.tabs(["📖 Guide", "🗂️ Merge", "👥 Past Authors", "🔑 Keywords", "📜 Cited", "💬 Citing", "✅ Validation", "🕵️ Hunter"])
+
+# --- 0. GUIDE ---
+with tabs[0]:
+    st.markdown("""
+    ## WELCOME TO SCHOLARHUNT!
+    The following guide will help you understand what each tab is for.
+
+    ### ⚡ FAST MODE
+    * **Fast Mode:** If your database has thousands of records, check the 'FAST MODE' option. The program will skip time-consuming web searches.
+
+    ### 🧠 Glossary: Citing vs Cited
+    Imagine your article published in a journal (Base Paper):
+    * **CITED (Bibliography / Backwards):** Authors of papers mentioned at the end of your text (References).
+    * **CITING (Citations / Forwards):** Newer papers that refer to your Base Paper.
+
+    ### 📖 Tab Guide
+    * **🗂️ 1. Merge:** Combining Excel/WoS file batches into a single list.
+    * **👥 2. Past Authors:** Splits files into Corresponding and Co-Authors tabs.
+    * **🔑 3. Keywords:** Generates a ready-to-use keywords list.
+    * **📜 4. Cited (Bibliography):** Authors of papers cited in DGB articles.
+    * **💬 5. Citing (Citations):** Authors of papers citing DGB articles.
+    * **✅ 6. Validation:** Cleaning the mailing list, evaluating the probability of correct emails.
+    * **🕵️ 7. Hunter:** Fills in missing emails from the Internet. Uses two strategies:
+        * **Google-Style:** Quick search based on first name, last name, and 'email'. Best for broad searches.
+        * **Affiliation:** Requires a country/affiliation column. Searches for surname and institution.
+    """)
 
 # --- 1. MERGE ---
-with tabs[0]:
+with tabs[1]:
     st.header("🗂️ Merge Files")
-    m_files = st.file_uploader("📂 Wgraj pliki WoS/Excel", accept_multiple_files=True, key="m_f")
-    m_oa = st.text_input("🌐 Link OpenAlex API", key="m_oa")
+    m_files = st.file_uploader("📂 Upload WoS/Excel files", accept_multiple_files=True, key="m_f")
+    m_oa = st.text_input("🌐 OpenAlex API Link", key="m_oa")
     m_fast, m_strat, m_api, m_pdf, m_deep = render_kombajn_ui("m")
     m_opts = render_options_ui("m")
     
@@ -369,7 +398,7 @@ with tabs[0]:
         
         if m_files:
             for idx, f in enumerate(m_files):
-                progress_text.text(f"Przetwarzanie pliku {idx+1}/{len(m_files)}...")
+                progress_text.text(f"Processing file {idx+1}/{len(m_files)}...")
                 df = pd.read_excel(f) if f.name.endswith(('xls', 'xlsx')) else pd.read_csv(f)
                 for _, r in df.iterrows():
                     doi, title, af, ems, ad, rp = extract_universal_data(df, r)
@@ -377,7 +406,7 @@ with tabs[0]:
                 prog_bar.progress((idx + 1) / len(m_files))
                 
         if m_oa:
-            progress_text.text("Przetwarzanie OpenAlex API...")
+            progress_text.text("Processing OpenAlex API...")
             oa_works = fetch_works_from_openalex_url(m_oa, global_api_key)
             for work in oa_works:
                 doi, title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
@@ -389,15 +418,15 @@ with tabs[0]:
             if 'Email' in out_df.columns:
                 out_df = pd.concat([out_df[out_df['Email'] != ''].drop_duplicates(subset=['Email']), out_df[out_df['Email'] == ''].drop_duplicates(subset=['Name', 'Surname'])])
             
-            progress_text.text("✅ Zakończono!")
-            st.success(f"Połączono pomyślnie. Znaleziono {len(out_df)} unikalnych autorów.")
-            st.download_button("💾 Pobierz Merge.xlsx", data=to_excel_buffer(out_df), file_name="Merge_Result.xlsx")
+            progress_text.text("✅ Completed!")
+            st.success(f"Successfully merged. Found {len(out_df)} unique authors.")
+            st.download_button("💾 Download Merge.xlsx", data=to_excel_buffer(out_df), file_name="Merge_Result.xlsx")
 
 # --- 2. PAST AUTHORS ---
-with tabs[1]:
+with tabs[2]:
     st.header("👥 Past Authors")
-    p_files = st.file_uploader("📂 Wgraj pliki", accept_multiple_files=True, key="p_f")
-    p_oa = st.text_input("🌐 Link OpenAlex API", key="p_oa")
+    p_files = st.file_uploader("📂 Upload files", accept_multiple_files=True, key="p_f")
+    p_oa = st.text_input("🌐 OpenAlex API Link", key="p_oa")
     p_jrnl = st.text_input("DG Journal name:", key="p_jrnl")
     p_fast, p_strat, p_api, p_pdf, p_deep = render_kombajn_ui("p")
     p_opts = render_options_ui("p")
@@ -429,15 +458,15 @@ with tabs[1]:
             df_corr = out_df[out_df['is_corr']==True].drop(columns=['is_corr'], errors='ignore')
             df_co = out_df[out_df['is_corr']==False].drop(columns=['is_corr'], errors='ignore')
             
-            progress_text.text("✅ Zakończono!")
+            progress_text.text("✅ Completed!")
             col1, col2 = st.columns(2)
-            col1.download_button("💾 Pobierz Corresponding", data=to_excel_buffer(df_corr), file_name="Corresponding.xlsx")
-            col2.download_button("💾 Pobierz CoAuthors", data=to_excel_buffer(df_co), file_name="CoAuthors.xlsx")
+            col1.download_button("💾 Download Corresponding", data=to_excel_buffer(df_corr), file_name="Corresponding.xlsx")
+            col2.download_button("💾 Download CoAuthors", data=to_excel_buffer(df_co), file_name="CoAuthors.xlsx")
 
 # --- 3. KEYWORDS ---
-with tabs[2]:
+with tabs[3]:
     st.header("🔑 Keywords")
-    k_files = st.file_uploader("📂 Wgraj pliki", accept_multiple_files=True, key="k_f")
+    k_files = st.file_uploader("📂 Upload files", accept_multiple_files=True, key="k_f")
     col1, col2 = st.columns(2)
     k_jrnl = col1.text_input("DG Journal name:", key="k_j")
     k_kw = col2.text_input("DG Keyword:", key="k_kw")
@@ -462,30 +491,50 @@ with tabs[2]:
             out_df = enforce_column_order(out_df, 'keywords')
             if 'Email' in out_df.columns:
                 out_df = pd.concat([out_df[out_df['Email'] != ''].drop_duplicates(subset=['Email']), out_df[out_df['Email'] == ''].drop_duplicates(subset=['Name', 'Surname'])])
-            st.success("Wygenerowano listę.")
-            st.download_button("💾 Pobierz Keywords List", data=to_excel_buffer(out_df), file_name="Keywords_List.xlsx")
+            st.success("List generated.")
+            st.download_button("💾 Download Keywords List", data=to_excel_buffer(out_df), file_name="Keywords_List.xlsx")
 
 # --- 4. CITED ---
-with tabs[3]:
+with tabs[4]:
     st.header("📜 Cited (Backwards/References)")
-    st.subheader("Auto-Pilot (OpenAlex)")
-    c_jrnl = st.text_input("DG Journal name:", key="c_j")
-    c_doi = st.text_input("Base Paper DOI (np. 10.1515/...):", key="c_d")
     c_fast, c_strat, c_api, c_pdf, c_deep = render_kombajn_ui("c")
     c_opts = render_options_ui("c")
+    
+    st.subheader("Manual Mode")
+    c_man_files = st.file_uploader("📂 Upload Base File", accept_multiple_files=True, key="c_man_f")
+    c1, c2 = st.columns(2)
+    c_man_jrnl = c1.text_input("DG Journal name:", key="c_man_j")
+    c_man_title = c2.text_input("DG article title:", key="c_man_t")
+    c_man_link = c1.text_input("Link:", key="c_man_l")
+    c_man_doi = c2.text_input("DG article DOI:", key="c_man_d")
+    
+    if st.button("➕ LOAD BASE FILE (Manual)"):
+        if c_man_files and c_man_title:
+            extra = {"DG Journal name": c_man_jrnl, "DG article title": c_man_title, "link": c_man_link, "DG article DOI": c_man_doi}
+            for f in c_man_files:
+                df = pd.read_excel(f) if f.name.endswith(('xls', 'xlsx')) else pd.read_csv(f)
+                for _, r in df.iterrows():
+                    doi, title, af, ems, ad, rp = extract_universal_data(df, r)
+                    st.session_state.cited_db.extend(process_single_article(doi, title, af, ems, ad, rp, r, {}, c_opts, c_strat, c_fast, c_deep, False, extra))
+            st.success("Files added to database!")
+        else:
+            st.warning("Please upload files and provide an article title.")
+
+    st.subheader("Auto-Pilot (OpenAlex)")
+    c_jrnl = st.text_input("DG Journal name (Auto):", key="c_auto_j")
+    c_doi = st.text_input("Base Paper DOI (e.g. 10.1515/...):", key="c_auto_d")
     
     if st.button("🚀 RUN AUTO-PILOT (CITED)", type="primary"):
         if c_doi:
             clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', c_doi)
             clean_doi = clean_doi.group(0) if clean_doi else c_doi.replace('https://doi.org/', '').strip()
             
-            with st.spinner("Pobieranie referencji z OpenAlex..."):
+            with st.spinner("Fetching references from OpenAlex..."):
                 headers = {'api_key': global_api_key} if global_api_key else {}
                 res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers).json()
                 b_title = res.get('title', 'Unknown')
                 ref_urls = res.get('referenced_works', [])
                 
-                final_rows = []
                 extra = {"DG Journal name": c_jrnl, "DG article title": b_title, "link": f"https://doi.org/{clean_doi}", "DG article DOI": clean_doi}
                 
                 if ref_urls:
@@ -495,29 +544,54 @@ with tabs[3]:
                         works = fetch_works_from_openalex_url("https://api.openalex.org/works?filter=openalex:" + "|".join(ref_ids[k:k+50]), global_api_key)
                         for work in works:
                             w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
-                            final_rows.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, c_opts, c_strat, c_fast, c_deep, False, extra))
+                            st.session_state.cited_db.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, c_opts, c_strat, c_fast, c_deep, False, extra))
                         prog_bar.progress(min((k+50)/len(ref_ids), 1.0))
-                
-                if final_rows:
-                    out_df = enforce_column_order(pd.DataFrame(final_rows).drop_duplicates(subset=['Name', 'Surname']), 'cited')
-                    st.success("Zakończono pobieranie cytowań!")
-                    st.download_button("💾 Eksportuj Cited Base", data=to_excel_buffer(out_df), file_name="Cited_Outreach_Base.xlsx")
+                    st.success("Auto-Pilot added references to database!")
+
+    st.write(f"📊 **Database Entries:** {len(st.session_state.cited_db)}")
+    if st.session_state.cited_db:
+        if st.button("🗑️ CLEAR DATABASE"):
+            st.session_state.cited_db = []
+            st.rerun()
+        out_df = enforce_column_order(pd.DataFrame(st.session_state.cited_db).drop_duplicates(subset=['Name', 'Surname']), 'cited')
+        st.download_button("💾 EXPORT CITED RESULTS", data=to_excel_buffer(out_df), file_name="Cited_Outreach_Base.xlsx")
 
 # --- 5. CITING ---
-with tabs[4]:
+with tabs[5]:
     st.header("💬 Citing (Forwards/Citations)")
-    st.subheader("Auto-Pilot (OpenAlex)")
-    ci_jrnl = st.text_input("DG Journal name:", key="ci_j")
-    ci_doi = st.text_input("Base Paper DOI:", key="ci_d")
     ci_fast, ci_strat, ci_api, ci_pdf, ci_deep = render_kombajn_ui("ci")
     ci_opts = render_options_ui("ci")
+    
+    st.subheader("Manual Mode")
+    ci_man_files = st.file_uploader("📂 Upload Base File", accept_multiple_files=True, key="ci_man_f")
+    ci1, ci2 = st.columns(2)
+    ci_man_jrnl = ci1.text_input("DG Journal name:", key="ci_man_j")
+    ci_man_title = ci2.text_input("DG article title:", key="ci_man_t")
+    ci_man_link = ci1.text_input("Link:", key="ci_man_l")
+    ci_man_doi = ci2.text_input("DG article DOI:", key="ci_man_d")
+    
+    if st.button("➕ LOAD BASE FILE (Manual)", key="ci_man_btn"):
+        if ci_man_files and ci_man_title:
+            extra = {"DG Journal name": ci_man_jrnl, "DG article title": ci_man_title, "link": ci_man_link, "DG article DOI": ci_man_doi}
+            for f in ci_man_files:
+                df = pd.read_excel(f) if f.name.endswith(('xls', 'xlsx')) else pd.read_csv(f)
+                for _, r in df.iterrows():
+                    doi, title, af, ems, ad, rp = extract_universal_data(df, r)
+                    st.session_state.citing_db.extend(process_single_article(doi, title, af, ems, ad, rp, r, {}, ci_opts, ci_strat, ci_fast, ci_deep, False, extra))
+            st.success("Files added to database!")
+        else:
+            st.warning("Please upload files and provide an article title.")
+
+    st.subheader("Auto-Pilot (OpenAlex)")
+    ci_jrnl = st.text_input("DG Journal name (Auto):", key="ci_auto_j")
+    ci_doi = st.text_input("Base Paper DOI:", key="ci_auto_d")
     
     if st.button("🚀 RUN AUTO-PILOT (CITING)", type="primary"):
         if ci_doi:
             clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', ci_doi)
             clean_doi = clean_doi.group(0) if clean_doi else ci_doi.replace('https://doi.org/', '').strip()
             
-            with st.spinner("Pobieranie dokumentów cytujących..."):
+            with st.spinner("Fetching citing documents..."):
                 headers = {'api_key': global_api_key} if global_api_key else {}
                 res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers).json()
                 b_title = res.get('title', 'Unknown')
@@ -526,18 +600,21 @@ with tabs[4]:
                 extra = {"DG Journal name": ci_jrnl, "DG article title": b_title, "link": f"https://doi.org/{clean_doi}", "DG article DOI": clean_doi}
                 works = fetch_works_from_openalex_url(f"https://api.openalex.org/works?filter=cites:{b_id}", global_api_key)
                 
-                final_rows = []
                 for work in works:
                     w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
-                    final_rows.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, ci_opts, ci_strat, ci_fast, ci_deep, False, extra))
-                
-                if final_rows:
-                    out_df = enforce_column_order(pd.DataFrame(final_rows).drop_duplicates(subset=['Name', 'Surname']), 'citing')
-                    st.success("Zakończono pobieranie!")
-                    st.download_button("💾 Eksportuj Citing Base", data=to_excel_buffer(out_df), file_name="Citing_Outreach_Base.xlsx")
+                    st.session_state.citing_db.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, ci_opts, ci_strat, ci_fast, ci_deep, False, extra))
+                st.success("Auto-Pilot added citing papers to database!")
+
+    st.write(f"📊 **Database Entries:** {len(st.session_state.citing_db)}")
+    if st.session_state.citing_db:
+        if st.button("🗑️ CLEAR DATABASE", key="clear_ci"):
+            st.session_state.citing_db = []
+            st.rerun()
+        out_df = enforce_column_order(pd.DataFrame(st.session_state.citing_db).drop_duplicates(subset=['Name', 'Surname']), 'citing')
+        st.download_button("💾 EXPORT CITING RESULTS", data=to_excel_buffer(out_df), file_name="Citing_Outreach_Base.xlsx")
 
 # --- 6. VALIDATION ---
-with tabs[5]:
+with tabs[6]:
     st.header("✅ Smart Validation")
     v_file = st.file_uploader("📂 Select Excel File", type=["xlsx", "xls"], key="v_f")
     if v_file and st.button("🔍 START VALIDATION", type="primary"):
@@ -562,22 +639,21 @@ with tabs[5]:
                 'To_Verify': df[df['Status Walidacji'] == 'Manual Verification Required'],
                 'Invalid': df[df['Status Walidacji'].str.contains('Invalid|Missing')]
             }
-            st.success("Zakończono segregację maili.")
-            st.download_button("💾 Pobierz Raport Walidacji", data=to_excel_multisheet_buffer(sheets), file_name="Validated_Report.xlsx")
+            st.success("Email sorting completed.")
+            st.download_button("💾 Download Validation Report", data=to_excel_multisheet_buffer(sheets), file_name="Validated_Report.xlsx")
         else:
-            st.error("Wymagane kolumny: Email, Surname.")
+            st.error("Required columns missing: Email, Surname.")
 
 # --- 7. HUNTER ---
-with tabs[6]:
+with tabs[7]:
     st.header("🕵️ Cascading Email Hunter")
-    h_file = st.file_uploader("📂 Wgraj bazę z brakującymi", type=["xlsx", "xls"], key="h_f")
-    h_strat = st.radio("Strategia:", ["Google-Style", "Affiliation"], key="h_s")
-    is_deep = st.checkbox("🕸️ DEEP SCAN (Wymaga czasu)", value=False)
+    h_file = st.file_uploader("📂 Upload database with missing emails", type=["xlsx", "xls"], key="h_f")
+    h_strat = st.radio("Strategy:", ["Google-Style", "Affiliation"], key="h_s")
+    is_deep = st.checkbox("🕸️ DEEP SCAN (Takes more time)", value=False)
     
-    if h_file and st.button("🚀 URUCHOM HUNTERA", type="primary"):
+    if h_file and st.button("🚀 RUN HUNTER", type="primary"):
         df = pd.read_excel(h_file)
         
-        # FIX: PANDAS FLOAT64 ISSUE
         email_col = next((c for c in df.columns if 'mail' in c.lower()), 'Email')
         if email_col not in df.columns: df[email_col] = ""
         df[email_col] = df[email_col].astype(object)
@@ -603,7 +679,7 @@ with tabs[6]:
                 prog_bar.progress((idx + 1) / total)
                 continue
                 
-            status_text.text(f"🔍 Szukam: {nm} {sn}...")
+            status_text.text(f"🔍 Searching: {nm} {sn}...")
             email_found = ""; all_s = []
 
             if orc and len(orc) >= 15:
@@ -614,7 +690,7 @@ with tabs[6]:
                 email_found = get_matched_email(sn, list(set(all_s)))
 
             if not email_found and HAS_DDGS:
-                time.sleep(2.0) # Zabezpieczenie przed limitem w Streamlit Cloud
+                time.sleep(2.0)
                 queries = [f'"{nm} {sn}" email', f'"{sn}" email contact'] if "Google" in h_strat else [f'"{nm} {sn}" {aff if aff and aff.lower()!="nan" else "university"} email']
                 try:
                     with DDGS() as ddgs:
@@ -630,7 +706,7 @@ with tabs[6]:
                                         all_s.extend(scrape_deep(url, nm + " " + sn))
                             email_found = get_matched_email(sn, list(set(all_s)))
                 except Exception as e:
-                    st.warning(f"Błąd silnika dla {sn}: {e}")
+                    st.warning(f"Engine error for {sn}: {e}")
 
             if email_found:
                 df.at[idx, email_col] = email_found
@@ -638,5 +714,5 @@ with tabs[6]:
                 
             prog_bar.progress((idx + 1) / total)
             
-        status_text.text(f"✅ Zakończono! Uzupełniono {znalezione} rekordów.")
-        st.download_button("💾 Pobierz Uzupełnioną Bazę", data=to_excel_buffer(df), file_name="Hunter_Results.xlsx")
+        status_text.text(f"✅ Completed! Filled in {znalezione} records.")
+        st.download_button("💾 Download Updated Database", data=to_excel_buffer(df), file_name="Hunter_Results.xlsx")
