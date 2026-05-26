@@ -23,7 +23,7 @@ except ImportError:
     HAS_DEEP_SCRAPE = False
 
 # --- CONFIG & CONSTANTS ---
-st.set_page_config(page_title="ScholarHunt Cloud", page_icon="📚", layout="wide")
+st.set_page_config(page_title="ScholarHunt", page_icon="📚", layout="wide")
 
 TLD_MAP = {
     'sweden': '.se', 'poland': '.pl', 'germany': '.de', 'france': '.fr', 'italy': '.it', 
@@ -48,15 +48,17 @@ if 'cited_batches' not in st.session_state: st.session_state.cited_batches = []
 if 'citing_db' not in st.session_state: st.session_state.citing_db = []
 if 'citing_batches' not in st.session_state: st.session_state.citing_batches = []
 
-# Autosave accumulation states
+# Autosave accumulation states for ALL tabs
 if 'merge_acc' not in st.session_state: st.session_state.merge_acc = []
 if 'past_acc' not in st.session_state: st.session_state.past_acc = []
 if 'keywords_acc' not in st.session_state: st.session_state.keywords_acc = []
+if 'cited_acc' not in st.session_state: st.session_state.cited_acc = []
+if 'citing_acc' not in st.session_state: st.session_state.citing_acc = []
+if 'val_acc_df' not in st.session_state: st.session_state.val_acc_df = pd.DataFrame()
 if 'hunter_acc_df' not in st.session_state: st.session_state.hunter_acc_df = pd.DataFrame()
 
 # --- CORE LOGIC FUNCTIONS ---
 def update_progress_with_eta(placeholder, bar, current, total, start_time, base_text):
-    """Oblicza ETA i aktualizuje pasek postępu"""
     if total <= 0: return
     bar.progress(min(current/total, 1.0))
     elapsed = time.time() - start_time
@@ -341,6 +343,8 @@ def to_excel_buffer(df_or_list):
     df = pd.DataFrame(df_or_list) if isinstance(df_or_list, list) else df_or_list
     output = io.BytesIO()
     if not df.empty:
+        for col in df.select_dtypes(include=['object']):
+            df[col] = df[col].apply(lambda x: re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(x)) if pd.notna(x) else x)
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
     return output.getvalue()
@@ -373,7 +377,7 @@ def render_options_ui(prefix):
     return opts
 
 # --- MAIN APP ---
-st.title("📚 ScholarHunt Cloud")
+st.title("📚 ScholarHunt")
 st.markdown("Scientific Contacts Management System")
 
 with st.sidebar:
@@ -381,7 +385,7 @@ with st.sidebar:
     global_api_key = st.text_input("OpenAlex API Key (Optional):", type="password")
     if not HAS_DDGS: st.error("⚠️ Error loading 'ddgs' package. Check requirements.txt")
 
-tabs = st.tabs(["📖 Guide", "🗂️ Merge", "👥 Past Authors", "🔑 Keywords", "📜 Cited", "💬 Citing", "✅ Validation", "🕵️ Hunter"])
+tabs = st.tabs(["📖 Guide", "🗂️ Merge", "👥 Past Authors", "🔑 Keywords", "📜 Cited Outreach", "💬 Citing Outreach", "✅ Validation", "🕵️ Hunter"])
 
 # --- 0. GUIDE ---
 with tabs[0]:
@@ -396,12 +400,10 @@ with tabs[0]:
     * **🗂️ 1. Merge:** Combining Excel/WoS file batches into a single list.
     * **👥 2. Past Authors:** Splits files into Corresponding and Co-Authors tabs.
     * **🔑 3. Keywords:** Generates a ready-to-use keywords list.
-    * **📜 4. Cited (Bibliography):** Authors of papers cited in DGB articles.
-    * **💬 5. Citing (Citations):** Authors of papers citing DGB articles.
-    * **✅ 6. Validation:** Cleaning the mailing list, evaluating the probability of correct emails.
-    * **🕵️ 7. Hunter:** Fills in missing emails from the Internet. Uses two strategies:
-        * **Google-Style:** Quick search based on first name, last name, and 'email'. Best for broad searches.
-        * **Affiliation:** Requires a country/affiliation column. Searches for surname and institution.
+    * **📜 4. Cited Outreach:** Management for authors cited by Base Papers.
+    * **💬 5. Citing Outreach:** Management for authors citing Base Papers.
+    * **✅ 6. Validation:** Cleaning the mailing list.
+    * **🕵️ 7. Hunter:** Fills in missing emails from the Internet.
     """)
 
 # --- 1. MERGE ---
@@ -412,7 +414,14 @@ with tabs[1]:
     m_fast, m_strat, m_api, m_pdf, m_deep = render_kombajn_ui("m")
     m_opts = render_options_ui("m")
     
-    if st.button("🚀 RUN MERGE", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_merge = ctrl1.button("🚀 RUN MERGE", type="primary")
+    ctrl2.button("🛑 STOP", key="stop_m")
+    if st.session_state.merge_acc:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.merge_acc), file_name="AUTOSAVE_Merge.xlsx")
+    
+    if run_merge:
         st.session_state.merge_acc = []
         progress_text = st.empty()
         prog_bar = st.progress(0)
@@ -446,11 +455,7 @@ with tabs[1]:
             
             progress_text.text("✅ Completed!")
             st.success(f"Successfully merged. Found {len(out_df)} unique authors.")
-            st.download_button("💾 Download Final Merge.xlsx", data=to_excel_buffer(out_df), file_name="Merge_Result.xlsx")
-
-    # Przycisk Autosave - Zawsze widoczny jeśli są dane
-    if st.session_state.merge_acc:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.merge_acc), file_name="AUTOSAVE_Merge.xlsx")
+            st.download_button("💾 Download Final Merge.xlsx", data=to_excel_buffer(out_df), file_name="Merge_Result.xlsx", key="final_m")
 
 # --- 2. PAST AUTHORS ---
 with tabs[2]:
@@ -461,7 +466,14 @@ with tabs[2]:
     p_fast, p_strat, p_api, p_pdf, p_deep = render_kombajn_ui("p")
     p_opts = render_options_ui("p")
     
-    if st.button("🚀 RUN SPLIT", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_past = ctrl1.button("🚀 RUN SPLIT", type="primary")
+    ctrl2.button("🛑 STOP", key="stop_p")
+    if st.session_state.past_acc:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.past_acc), file_name="AUTOSAVE_Past.xlsx")
+
+    if run_past:
         st.session_state.past_acc = []
         progress_text = st.empty()
         prog_bar = st.progress(0)
@@ -502,10 +514,6 @@ with tabs[2]:
             col1.download_button("💾 Download Corresponding", data=to_excel_buffer(df_corr), file_name="Corresponding.xlsx")
             col2.download_button("💾 Download CoAuthors", data=to_excel_buffer(df_co), file_name="CoAuthors.xlsx")
 
-    # Przycisk Autosave
-    if st.session_state.past_acc:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.past_acc), file_name="AUTOSAVE_Past.xlsx")
-
 # --- 3. KEYWORDS ---
 with tabs[3]:
     st.header("🔑 Keywords")
@@ -520,7 +528,14 @@ with tabs[3]:
     k_fast, k_strat, k_api, k_pdf, k_deep = render_kombajn_ui("k")
     k_opts = render_options_ui("k")
     
-    if st.button("🚀 GENERATE KEYWORDS LIST", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_key = ctrl1.button("🚀 GENERATE KEYWORDS", type="primary")
+    ctrl2.button("🛑 STOP", key="stop_k")
+    if st.session_state.keywords_acc:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.keywords_acc), file_name="AUTOSAVE_Keywords.xlsx")
+
+    if run_key:
         st.session_state.keywords_acc = []
         progress_text = st.empty()
         prog_bar = st.progress(0)
@@ -547,14 +562,11 @@ with tabs[3]:
             
             progress_text.text("✅ Completed!")
             st.success("List generated.")
-            st.download_button("💾 Download Final Keywords List", data=to_excel_buffer(out_df), file_name="Keywords_List.xlsx")
-
-    if st.session_state.keywords_acc:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.keywords_acc), file_name="AUTOSAVE_Keywords.xlsx")
+            st.download_button("💾 Download Final Keywords List", data=to_excel_buffer(out_df), file_name="Keywords_List.xlsx", key="final_k")
 
 # --- 4. CITED ---
 with tabs[4]:
-    st.header("📜 Cited (Backwards/References)")
+    st.header("📜 Cited Outreach (Backwards/References)")
     c_fast, c_strat, c_api, c_pdf, c_deep = render_kombajn_ui("c")
     c_opts = render_options_ui("c")
     
@@ -579,7 +591,6 @@ with tabs[4]:
                     for res in results: res['batch_id'] = batch_id
                     st.session_state.cited_db.extend(results)
                     added_count += len(results)
-                    
             st.session_state.cited_batches.append({'batch_id': batch_id, 'Journal': c_man_jrnl, 'Title': c_man_title, 'Count': added_count})
             st.success("Files added to database!")
         else:
@@ -589,8 +600,16 @@ with tabs[4]:
     c_jrnl = st.text_input("DG Journal name (Auto):", key="c_auto_j")
     c_doi = st.text_input("DOI or Mass OpenAlex Link:", key="c_auto_d")
     
-    if st.button("🚀 RUN AUTO-PILOT (CITED)", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_cited = ctrl1.button("🚀 RUN AUTO-PILOT", type="primary", key="run_cited")
+    ctrl2.button("🛑 STOP", key="stop_c")
+    if st.session_state.cited_acc:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.cited_acc), file_name="AUTOSAVE_Cited.xlsx")
+
+    if run_cited:
         if c_doi:
+            st.session_state.cited_acc = []
             with st.spinner("Fetching base works from OpenAlex..."):
                 base_works = []
                 headers = {'api_key': global_api_key} if global_api_key else {}
@@ -601,10 +620,7 @@ with tabs[4]:
                     clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', c_doi)
                     clean_doi = clean_doi.group(0) if clean_doi else c_doi.replace('https://doi.org/', '').strip()
                     res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers)
-                    if res.status_code == 200:
-                        base_works = [res.json()]
-                    else:
-                        st.error("DOI not found or API error.")
+                    if res.status_code == 200: base_works = [res.json()]
                 
                 if base_works:
                     batch_id = str(time.time())
@@ -631,27 +647,23 @@ with tabs[4]:
                                     w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
                                     results = process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, c_opts, c_strat, c_fast, c_deep, False, extra)
                                     for res in results: res['batch_id'] = batch_id
-                                    st.session_state.cited_db.extend(results)
+                                    st.session_state.cited_acc.extend(results)
                                     added_count += len(results)
                     
+                    st.session_state.cited_db.extend(st.session_state.cited_acc)
                     batch_title = f"Mass Link ({total_base} papers)" if total_base > 1 else f"Auto-Pilot ({base_works[0].get('title', 'Unknown')[:25]}...)"
                     st.session_state.cited_batches.append({'batch_id': batch_id, 'Journal': c_jrnl, 'Title': batch_title, 'Count': added_count})
                     status_text.text("✅ All papers processed!")
                     st.success("Auto-Pilot added references to database!")
 
-    if st.session_state.cited_db:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.cited_db), file_name="AUTOSAVE_Cited.xlsx")
-
     if st.session_state.cited_batches:
         st.markdown("---")
         st.write(f"📊 **Total Database Entries:** {len(st.session_state.cited_db)}")
-        
         df_batches = pd.DataFrame(st.session_state.cited_batches)
         st.dataframe(df_batches[['Journal', 'Title', 'Count']], width=800)
         
         col_del1, col_del2 = st.columns([3, 1])
         batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.cited_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="c_del_sel")
-        
         if col_del2.button("🗑️ DELETE SELECTED ROW", key="c_del_btn"):
             st.session_state.cited_db = [r for r in st.session_state.cited_db if r.get('batch_id') != batch_to_delete['batch_id']]
             st.session_state.cited_batches = [b for b in st.session_state.cited_batches if b['batch_id'] != batch_to_delete['batch_id']]
@@ -662,7 +674,7 @@ with tabs[4]:
 
 # --- 5. CITING ---
 with tabs[5]:
-    st.header("💬 Citing (Forwards/Citations)")
+    st.header("💬 Citing Outreach (Forwards/Citations)")
     ci_fast, ci_strat, ci_api, ci_pdf, ci_deep = render_kombajn_ui("ci")
     ci_opts = render_options_ui("ci")
     
@@ -687,7 +699,6 @@ with tabs[5]:
                     for res in results: res['batch_id'] = batch_id
                     st.session_state.citing_db.extend(results)
                     added_count += len(results)
-                    
             st.session_state.citing_batches.append({'batch_id': batch_id, 'Journal': ci_man_jrnl, 'Title': ci_man_title, 'Count': added_count})
             st.success("Files added to database!")
         else:
@@ -697,8 +708,16 @@ with tabs[5]:
     ci_jrnl = st.text_input("DG Journal name (Auto):", key="ci_auto_j")
     ci_doi = st.text_input("DOI or Mass OpenAlex Link:", key="ci_auto_d")
     
-    if st.button("🚀 RUN AUTO-PILOT (CITING)", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_citing = ctrl1.button("🚀 RUN AUTO-PILOT", type="primary", key="run_citing")
+    ctrl2.button("🛑 STOP", key="stop_ci")
+    if st.session_state.citing_acc:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.citing_acc), file_name="AUTOSAVE_Citing.xlsx")
+
+    if run_citing:
         if ci_doi:
+            st.session_state.citing_acc = []
             with st.spinner("Fetching base works from OpenAlex..."):
                 base_works = []
                 headers = {'api_key': global_api_key} if global_api_key else {}
@@ -709,10 +728,7 @@ with tabs[5]:
                     clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', ci_doi)
                     clean_doi = clean_doi.group(0) if clean_doi else ci_doi.replace('https://doi.org/', '').strip()
                     res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers)
-                    if res.status_code == 200:
-                        base_works = [res.json()]
-                    else:
-                        st.error("DOI not found or API error.")
+                    if res.status_code == 200: base_works = [res.json()]
                         
                 if base_works:
                     batch_id = str(time.time())
@@ -736,28 +752,24 @@ with tabs[5]:
                             w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
                             results = process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, ci_opts, ci_strat, ci_fast, ci_deep, False, extra)
                             for res in results: res['batch_id'] = batch_id
-                            st.session_state.citing_db.extend(results)
+                            st.session_state.citing_acc.extend(results)
                             added_count += len(results)
                             
+                    st.session_state.citing_db.extend(st.session_state.citing_acc)
                     batch_title = f"Mass Link ({total_base} papers)" if total_base > 1 else f"Auto-Pilot ({base_works[0].get('title', 'Unknown')[:25]}...)"
                     st.session_state.citing_batches.append({'batch_id': batch_id, 'Journal': ci_jrnl, 'Title': batch_title, 'Count': added_count})
                     status_text.text("✅ All papers processed!")
                     st.success("Auto-Pilot added citing papers to database!")
 
-    if st.session_state.citing_db:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.citing_db), file_name="AUTOSAVE_Citing.xlsx")
-
     if st.session_state.citing_batches:
         st.markdown("---")
         st.write(f"📊 **Total Database Entries:** {len(st.session_state.citing_db)}")
-        
         df_batches = pd.DataFrame(st.session_state.citing_batches)
         st.dataframe(df_batches[['Journal', 'Title', 'Count']], width=800)
         
         col_del1, col_del2 = st.columns([3, 1])
         batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.citing_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="ci_del_sel")
-        
-        if col_del2.button("🗑️ DELETE SELECTED ROW", key="ci_del_btn"):
+        if col_del2.button("🗑️ DELETE SELECTED ROW", key="ci_del_btn_real"):
             st.session_state.citing_db = [r for r in st.session_state.citing_db if r.get('batch_id') != batch_to_delete['batch_id']]
             st.session_state.citing_batches = [b for b in st.session_state.citing_batches if b['batch_id'] != batch_to_delete['batch_id']]
             st.rerun()
@@ -769,35 +781,45 @@ with tabs[5]:
 with tabs[6]:
     st.header("✅ Smart Validation")
     v_file = st.file_uploader("📂 Select Excel File", type=["xlsx", "xls"], key="v_f")
-    if v_file and st.button("🔍 START VALIDATION", type="primary"):
+    
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_val = ctrl1.button("🔍 START VALIDATION", type="primary")
+    ctrl2.button("🛑 STOP", key="stop_v")
+    if not st.session_state.val_acc_df.empty:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.val_acc_df), file_name="AUTOSAVE_Validation.xlsx")
+
+    if run_val and v_file:
         df = pd.read_excel(v_file)
         em_col = next((c for c in df.columns if 'mail' in str(c).lower()), None)
         sn_col = next((c for c in df.columns if 'surname' in str(c).lower() or 'nazwisko' in str(c).lower()), None)
         c_col = next((c for c in df.columns if 'country' in str(c).lower() or 'kraj' in str(c).lower()), None)
         
         if em_col and sn_col:
+            st.session_state.val_acc_df = df.copy()
+            st.session_state.val_acc_df['Smart Status'] = "Pending"
+            
             prog_bar = st.progress(0)
             status_text = st.empty()
             start_time = time.time()
             total = len(df)
             
-            status_list = []
             for i, row in df.iterrows():
                 em, sn = str(row[em_col]), str(row[sn_col])
                 ct = str(row[c_col]) if c_col else ""
-                status_list.append(validate_email_intelligence(em, sn, ct) if em and em != 'nan' else "Missing Email")
+                status = validate_email_intelligence(em, sn, ct) if em and em != 'nan' else "Missing Email"
+                st.session_state.val_acc_df.at[i, 'Smart Status'] = status
                 update_progress_with_eta(status_text, prog_bar, i + 1, total, start_time, "Validating")
                 
-            df['Status Walidacji'] = status_list
             sheets = {
-                'Certain': df[df['Status Walidacji'].str.startswith('Certain')],
-                'Probable': df[df['Status Walidacji'].str.startswith('Probable')],
-                'To_Verify': df[df['Status Walidacji'] == 'Manual Verification Required'],
-                'Invalid': df[df['Status Walidacji'].str.contains('Invalid|Missing')]
+                'Certain': st.session_state.val_acc_df[st.session_state.val_acc_df['Smart Status'].str.startswith('Certain')],
+                'Probable': st.session_state.val_acc_df[st.session_state.val_acc_df['Smart Status'].str.startswith('Probable')],
+                'To_Verify': st.session_state.val_acc_df[st.session_state.val_acc_df['Smart Status'] == 'Manual Verification Required'],
+                'Invalid': st.session_state.val_acc_df[st.session_state.val_acc_df['Smart Status'].str.contains('Invalid|Missing')]
             }
             status_text.text("✅ Completed!")
             st.success("Email sorting completed.")
-            st.download_button("💾 Download Validation Report", data=to_excel_multisheet_buffer(sheets), file_name="Validated_Report.xlsx")
+            st.download_button("💾 Download Final Validation Report", data=to_excel_multisheet_buffer(sheets), file_name="Validated_Report.xlsx", key="final_v")
         else:
             st.error("Required columns missing: Email, Surname.")
 
@@ -808,7 +830,14 @@ with tabs[7]:
     h_strat = st.radio("Strategy:", ["Google-Style", "Affiliation"], key="h_s")
     is_deep = st.checkbox("🕸️ DEEP SCAN (Takes more time)", value=False)
     
-    if h_file and st.button("🚀 RUN HUNTER", type="primary"):
+    st.markdown("---")
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    run_hunt = ctrl1.button("🚀 RUN HUNTER", type="primary")
+    ctrl2.button("🛑 STOP", key="stop_h")
+    if not st.session_state.hunter_acc_df.empty:
+        ctrl3.download_button("💾 Download Emergency Autosave", data=to_excel_buffer(st.session_state.hunter_acc_df), file_name="AUTOSAVE_Hunter.xlsx")
+
+    if run_hunt and h_file:
         df = pd.read_excel(h_file)
         
         email_col = next((c for c in df.columns if 'mail' in c.lower()), 'Email')
@@ -820,7 +849,7 @@ with tabs[7]:
         aff_col = next((c for c in df.columns if 'country' in c.lower() or 'affil' in c.lower()), None)
         orcid_col = next((c for c in df.columns if 'orcid' in c.lower()), None)
         
-        st.session_state.hunter_acc_df = df.copy() # Reset akumulacji
+        st.session_state.hunter_acc_df = df.copy() 
         
         prog_bar = st.progress(0)
         status_text = st.empty()
@@ -866,16 +895,11 @@ with tabs[7]:
                                         all_s.extend(scrape_deep(url, nm + " " + sn))
                             email_found = get_matched_email(sn, list(set(all_s)))
                 except Exception as e:
-                    st.warning(f"Engine error for {sn}: {e}")
+                    pass
 
             if email_found:
-                df.at[idx, email_col] = email_found
-                st.session_state.hunter_acc_df.at[idx, email_col] = email_found # Zapis na żywo w sesji
+                st.session_state.hunter_acc_df.at[idx, email_col] = email_found 
                 znalezione += 1
                 
         status_text.text(f"✅ Completed! Filled in {znalezione} records.")
-        st.download_button("💾 Download Final Updated Database", data=to_excel_buffer(df), file_name="Hunter_Results.xlsx")
-
-    # Przycisk Autosave
-    if not st.session_state.hunter_acc_df.empty:
-        st.download_button("💾 Download Emergency Autosave (Current Progress)", data=to_excel_buffer(st.session_state.hunter_acc_df), file_name="AUTOSAVE_Hunter.xlsx")
+        st.download_button("💾 Download Final Updated Database", data=to_excel_buffer(st.session_state.hunter_acc_df), file_name="Hunter_Results.xlsx", key="final_h")
