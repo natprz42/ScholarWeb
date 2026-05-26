@@ -588,7 +588,7 @@ with tabs[4]:
         st.write(f"📊 **Total Database Entries:** {len(st.session_state.cited_db)}")
         
         df_batches = pd.DataFrame(st.session_state.cited_batches)
-        st.dataframe(df_batches[['Journal', 'Title', 'Count']], use_container_width=True)
+        st.dataframe(df_batches[['Journal', 'Title', 'Count']], width=800) # lub inna wartość w pikselach
         
         col_del1, col_del2 = st.columns([3, 1])
         batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.cited_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="c_del_sel")
@@ -690,7 +690,7 @@ with tabs[5]:
         st.write(f"📊 **Total Database Entries:** {len(st.session_state.citing_db)}")
         
         df_batches = pd.DataFrame(st.session_state.citing_batches)
-        st.dataframe(df_batches[['Journal', 'Title', 'Count']], use_container_width=True)
+        st.dataframe(df_batches[['Journal', 'Title', 'Count']], width=800)
         
         col_del1, col_del2 = st.columns([3, 1])
         batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.citing_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="ci_del_sel")
