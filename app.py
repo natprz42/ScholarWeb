@@ -1076,7 +1076,7 @@ with tabs[7]:
                                     if url and not any(x in url.lower() for x in ['facebook', 'twitter', 'linkedin', 'researchgate', 'youtube']):
                                         all_s.extend(scrape_deep(url, nm + " " + sn))
                             email_found = get_matched_email(sn, list(set(all_s)))
-                exceptException as e: pass
+                except Exception as e: pass
 
             if email_found:
                 df.at[idx, email_col] = email_found
