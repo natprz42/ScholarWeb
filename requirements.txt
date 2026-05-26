@@ -1,0 +1,8 @@
+pandas
+streamlit
+requests
+cloudscraper
+beautifulsoup4
+duckduckgo-search
+openpyxl
+xlrd
