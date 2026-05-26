@@ -44,7 +44,9 @@ ADV_FIELDS = {
 
 # --- STATE INITIALIZATION ---
 if 'cited_db' not in st.session_state: st.session_state.cited_db = []
+if 'cited_batches' not in st.session_state: st.session_state.cited_batches = []
 if 'citing_db' not in st.session_state: st.session_state.citing_db = []
+if 'citing_batches' not in st.session_state: st.session_state.citing_batches = []
 
 # --- CORE LOGIC FUNCTIONS ---
 def normalize_international(text):
@@ -510,49 +512,92 @@ with tabs[4]:
     
     if st.button("➕ LOAD BASE FILE (Manual)"):
         if c_man_files and c_man_title:
+            batch_id = str(time.time())
             extra = {"DG Journal name": c_man_jrnl, "DG article title": c_man_title, "link": c_man_link, "DG article DOI": c_man_doi}
+            added_count = 0
             for f in c_man_files:
                 df = pd.read_excel(f) if f.name.endswith(('xls', 'xlsx')) else pd.read_csv(f)
                 for _, r in df.iterrows():
                     doi, title, af, ems, ad, rp = extract_universal_data(df, r)
-                    st.session_state.cited_db.extend(process_single_article(doi, title, af, ems, ad, rp, r, {}, c_opts, c_strat, c_fast, c_deep, False, extra))
+                    results = process_single_article(doi, title, af, ems, ad, rp, r, {}, c_opts, c_strat, c_fast, c_deep, False, extra)
+                    for res in results: res['batch_id'] = batch_id
+                    st.session_state.cited_db.extend(results)
+                    added_count += len(results)
+                    
+            st.session_state.cited_batches.append({'batch_id': batch_id, 'Journal': c_man_jrnl, 'Title': c_man_title, 'Count': added_count})
             st.success("Files added to database!")
         else:
             st.warning("Please upload files and provide an article title.")
 
     st.subheader("Auto-Pilot (OpenAlex)")
     c_jrnl = st.text_input("DG Journal name (Auto):", key="c_auto_j")
-    c_doi = st.text_input("Base Paper DOI (e.g. 10.1515/...):", key="c_auto_d")
+    c_doi = st.text_input("DOI or Mass OpenAlex Link:", key="c_auto_d")
     
     if st.button("🚀 RUN AUTO-PILOT (CITED)", type="primary"):
         if c_doi:
-            clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', c_doi)
-            clean_doi = clean_doi.group(0) if clean_doi else c_doi.replace('https://doi.org/', '').strip()
-            
-            with st.spinner("Fetching references from OpenAlex..."):
+            with st.spinner("Fetching base works from OpenAlex..."):
+                base_works = []
                 headers = {'api_key': global_api_key} if global_api_key else {}
-                res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers).json()
-                b_title = res.get('title', 'Unknown')
-                ref_urls = res.get('referenced_works', [])
                 
-                extra = {"DG Journal name": c_jrnl, "DG article title": b_title, "link": f"https://doi.org/{clean_doi}", "DG article DOI": clean_doi}
+                if "api.openalex.org" in c_doi and ("filter=" in c_doi or "search=" in c_doi):
+                    base_works = fetch_works_from_openalex_url(c_doi, global_api_key)
+                else:
+                    clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', c_doi)
+                    clean_doi = clean_doi.group(0) if clean_doi else c_doi.replace('https://doi.org/', '').strip()
+                    res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers)
+                    if res.status_code == 200:
+                        base_works = [res.json()]
+                    else:
+                        st.error("DOI not found or API error.")
                 
-                if ref_urls:
-                    ref_ids = [ref.split('/')[-1] for ref in ref_urls]
+                if base_works:
+                    batch_id = str(time.time())
+                    added_count = 0
+                    total_base = len(base_works)
                     prog_bar = st.progress(0)
-                    for k in range(0, len(ref_ids), 50):
-                        works = fetch_works_from_openalex_url("https://api.openalex.org/works?filter=openalex:" + "|".join(ref_ids[k:k+50]), global_api_key)
-                        for work in works:
-                            w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
-                            st.session_state.cited_db.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, c_opts, c_strat, c_fast, c_deep, False, extra))
-                        prog_bar.progress(min((k+50)/len(ref_ids), 1.0))
+                    status_text = st.empty()
+                    
+                    for idx, b_work in enumerate(base_works):
+                        b_title = b_work.get('title', 'Unknown')
+                        b_doi = b_work.get('doi', '').replace('https://doi.org/', '')
+                        status_text.text(f"Processing paper {idx+1}/{total_base}: {b_title[:40]}...")
+                        
+                        ref_urls = b_work.get('referenced_works', [])
+                        extra = {"DG Journal name": c_jrnl, "DG article title": b_title, "link": f"https://doi.org/{b_doi}" if b_doi else "", "DG article DOI": b_doi}
+                        
+                        if ref_urls:
+                            ref_ids = [ref.split('/')[-1] for ref in ref_urls]
+                            for k in range(0, len(ref_ids), 50):
+                                works = fetch_works_from_openalex_url("https://api.openalex.org/works?filter=openalex:" + "|".join(ref_ids[k:k+50]), global_api_key)
+                                for work in works:
+                                    w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
+                                    results = process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, c_opts, c_strat, c_fast, c_deep, False, extra)
+                                    for res in results: res['batch_id'] = batch_id
+                                    st.session_state.cited_db.extend(results)
+                                    added_count += len(results)
+                                    
+                        prog_bar.progress((idx + 1) / total_base)
+                    
+                    batch_title = f"Mass Link ({total_base} papers)" if total_base > 1 else f"Auto-Pilot ({base_works[0].get('title', 'Unknown')[:25]}...)"
+                    st.session_state.cited_batches.append({'batch_id': batch_id, 'Journal': c_jrnl, 'Title': batch_title, 'Count': added_count})
+                    status_text.text("✅ All papers processed!")
                     st.success("Auto-Pilot added references to database!")
 
-    st.write(f"📊 **Database Entries:** {len(st.session_state.cited_db)}")
-    if st.session_state.cited_db:
-        if st.button("🗑️ CLEAR DATABASE"):
-            st.session_state.cited_db = []
+    if st.session_state.cited_batches:
+        st.markdown("---")
+        st.write(f"📊 **Total Database Entries:** {len(st.session_state.cited_db)}")
+        
+        df_batches = pd.DataFrame(st.session_state.cited_batches)
+        st.dataframe(df_batches[['Journal', 'Title', 'Count']], use_container_width=True)
+        
+        col_del1, col_del2 = st.columns([3, 1])
+        batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.cited_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="c_del_sel")
+        
+        if col_del2.button("🗑️ DELETE SELECTED ROW", key="c_del_btn"):
+            st.session_state.cited_db = [r for r in st.session_state.cited_db if r.get('batch_id') != batch_to_delete['batch_id']]
+            st.session_state.cited_batches = [b for b in st.session_state.cited_batches if b['batch_id'] != batch_to_delete['batch_id']]
             st.rerun()
+            
         out_df = enforce_column_order(pd.DataFrame(st.session_state.cited_db).drop_duplicates(subset=['Name', 'Surname']), 'cited')
         st.download_button("💾 EXPORT CITED RESULTS", data=to_excel_buffer(out_df), file_name="Cited_Outreach_Base.xlsx")
 
@@ -572,44 +617,89 @@ with tabs[5]:
     
     if st.button("➕ LOAD BASE FILE (Manual)", key="ci_man_btn"):
         if ci_man_files and ci_man_title:
+            batch_id = str(time.time())
             extra = {"DG Journal name": ci_man_jrnl, "DG article title": ci_man_title, "link": ci_man_link, "DG article DOI": ci_man_doi}
+            added_count = 0
             for f in ci_man_files:
                 df = pd.read_excel(f) if f.name.endswith(('xls', 'xlsx')) else pd.read_csv(f)
                 for _, r in df.iterrows():
                     doi, title, af, ems, ad, rp = extract_universal_data(df, r)
-                    st.session_state.citing_db.extend(process_single_article(doi, title, af, ems, ad, rp, r, {}, ci_opts, ci_strat, ci_fast, ci_deep, False, extra))
+                    results = process_single_article(doi, title, af, ems, ad, rp, r, {}, ci_opts, ci_strat, ci_fast, ci_deep, False, extra)
+                    for res in results: res['batch_id'] = batch_id
+                    st.session_state.citing_db.extend(results)
+                    added_count += len(results)
+                    
+            st.session_state.citing_batches.append({'batch_id': batch_id, 'Journal': ci_man_jrnl, 'Title': ci_man_title, 'Count': added_count})
             st.success("Files added to database!")
         else:
             st.warning("Please upload files and provide an article title.")
 
     st.subheader("Auto-Pilot (OpenAlex)")
     ci_jrnl = st.text_input("DG Journal name (Auto):", key="ci_auto_j")
-    ci_doi = st.text_input("Base Paper DOI:", key="ci_auto_d")
+    ci_doi = st.text_input("DOI or Mass OpenAlex Link:", key="ci_auto_d")
     
     if st.button("🚀 RUN AUTO-PILOT (CITING)", type="primary"):
         if ci_doi:
-            clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', ci_doi)
-            clean_doi = clean_doi.group(0) if clean_doi else ci_doi.replace('https://doi.org/', '').strip()
-            
-            with st.spinner("Fetching citing documents..."):
+            with st.spinner("Fetching base works from OpenAlex..."):
+                base_works = []
                 headers = {'api_key': global_api_key} if global_api_key else {}
-                res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers).json()
-                b_title = res.get('title', 'Unknown')
-                b_id = res.get('id', '').split('/')[-1]
                 
-                extra = {"DG Journal name": ci_jrnl, "DG article title": b_title, "link": f"https://doi.org/{clean_doi}", "DG article DOI": clean_doi}
-                works = fetch_works_from_openalex_url(f"https://api.openalex.org/works?filter=cites:{b_id}", global_api_key)
-                
-                for work in works:
-                    w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
-                    st.session_state.citing_db.extend(process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, ci_opts, ci_strat, ci_fast, ci_deep, False, extra))
-                st.success("Auto-Pilot added citing papers to database!")
+                if "api.openalex.org" in ci_doi and ("filter=" in ci_doi or "search=" in ci_doi):
+                    base_works = fetch_works_from_openalex_url(ci_doi, global_api_key)
+                else:
+                    clean_doi = re.search(r'10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+', ci_doi)
+                    clean_doi = clean_doi.group(0) if clean_doi else ci_doi.replace('https://doi.org/', '').strip()
+                    res = requests.get(f"https://api.openalex.org/works/https://doi.org/{clean_doi}", headers=headers)
+                    if res.status_code == 200:
+                        base_works = [res.json()]
+                    else:
+                        st.error("DOI not found or API error.")
+                        
+                if base_works:
+                    batch_id = str(time.time())
+                    added_count = 0
+                    total_base = len(base_works)
+                    prog_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for idx, b_work in enumerate(base_works):
+                        b_title = b_work.get('title', 'Unknown')
+                        b_id = b_work.get('id', '').split('/')[-1]
+                        b_doi = b_work.get('doi', '').replace('https://doi.org/', '')
+                        status_text.text(f"Processing paper {idx+1}/{total_base}: {b_title[:40]}...")
+                        
+                        extra = {"DG Journal name": ci_jrnl, "DG article title": b_title, "link": f"https://doi.org/{b_doi}" if b_doi else "", "DG article DOI": b_doi}
+                        works = fetch_works_from_openalex_url(f"https://api.openalex.org/works?filter=cites:{b_id}", global_api_key)
+                        
+                        for work in works:
+                            w_doi, w_title, af, ems, ad, rp, orcid_map = extract_openalex_work(work)
+                            results = process_single_article(w_doi, w_title, af, ems, ad, rp, None, orcid_map, ci_opts, ci_strat, ci_fast, ci_deep, False, extra)
+                            for res in results: res['batch_id'] = batch_id
+                            st.session_state.citing_db.extend(results)
+                            added_count += len(results)
+                            
+                        prog_bar.progress((idx + 1) / total_base)
+                        
+                    batch_title = f"Mass Link ({total_base} papers)" if total_base > 1 else f"Auto-Pilot ({base_works[0].get('title', 'Unknown')[:25]}...)"
+                    st.session_state.citing_batches.append({'batch_id': batch_id, 'Journal': ci_jrnl, 'Title': batch_title, 'Count': added_count})
+                    status_text.text("✅ All papers processed!")
+                    st.success("Auto-Pilot added citing papers to database!")
 
-    st.write(f"📊 **Database Entries:** {len(st.session_state.citing_db)}")
-    if st.session_state.citing_db:
-        if st.button("🗑️ CLEAR DATABASE", key="clear_ci"):
-            st.session_state.citing_db = []
+    if st.session_state.citing_batches:
+        st.markdown("---")
+        st.write(f"📊 **Total Database Entries:** {len(st.session_state.citing_db)}")
+        
+        df_batches = pd.DataFrame(st.session_state.citing_batches)
+        st.dataframe(df_batches[['Journal', 'Title', 'Count']], use_container_width=True)
+        
+        col_del1, col_del2 = st.columns([3, 1])
+        batch_to_delete = col_del1.selectbox("Select row to delete:", options=st.session_state.citing_batches, format_func=lambda x: f"{x['Title']} ({x['Count']} items)", key="ci_del_sel")
+        
+        if col_del2.button("🗑️ DELETE SELECTED ROW", key="ci_del_btn"):
+            st.session_state.citing_db = [r for r in st.session_state.citing_db if r.get('batch_id') != batch_to_delete['batch_id']]
+            st.session_state.citing_batches = [b for b in st.session_state.citing_batches if b['batch_id'] != batch_to_delete['batch_id']]
             st.rerun()
+            
         out_df = enforce_column_order(pd.DataFrame(st.session_state.citing_db).drop_duplicates(subset=['Name', 'Surname']), 'citing')
         st.download_button("💾 EXPORT CITING RESULTS", data=to_excel_buffer(out_df), file_name="Citing_Outreach_Base.xlsx")
 
